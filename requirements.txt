@@ -1,0 +1,9 @@
+gspread
+oauth2client
+pytz
+python-dateutil
+selenium
+webdriver-manager
+ipython
+undetected-chromedriver
+python-dotenv
