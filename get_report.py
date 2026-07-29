@@ -62,6 +62,7 @@ try:
     print("✅ Google Sheets connected successfully using Colab authentication.")
 except Exception as e:
     print(f"⚠️ Error connecting to Google Sheets: {e}. Google Sheets functionality will be disabled.")
+
 def display_screenshot(driver: webdriver.Chrome, file_name: str = "screenshot.png"):
     driver.save_screenshot(file_name)
     time.sleep(3)
@@ -128,25 +129,29 @@ def extract_messages_from_teams_html(driver):
     return scraped_messages
 
 
-def scroll_and_scrape_chat(driver, chat_name, max_scrolls=5):
+def scroll_and_scrape_chat(driver, chat_name, max_scrolls=8):
     print(f"🔍 Bắt đầu cào dữ liệu HTML từ chat: {chat_name}")
     if not open_chat(driver, chat_name):
         return []
 
     try:
-        message_box = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.XPATH, '//div[@contenteditable="true"]'))
+        # Click vào khung chat và cuộn lên để tải thêm tin nhắn
+        message_pane = WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.XPATH, '//div[@role="document"] | //div[@contenteditable="true"]'))
         )
-        message_box.click()
+        message_pane.click()
         time.sleep(1)
 
         for _ in range(max_scrolls):
-            message_box.send_keys(Keys.PAGE_UP)
-            time.sleep(1.5)
+            message_pane.send_keys(Keys.PAGE_UP)
+            time.sleep(1.2)
+        
+        # Cuộn phát cuối bằng HOME để đẩy tối đa tin nhắn cũ ra HTML
+        message_pane.send_keys(Keys.HOME)
+        time.sleep(2)
     except Exception as e:
-        print(f"⚠️ Cuộn trang không thành công, thử cào dữ liệu màn hình hiện tại. Lỗi: {e}")
+        print(f"⚠️ Cuộn trang không thành công, thử cào dữ liệu hiện tại. Lỗi: {e}")
 
-    time.sleep(2)
     extracted_data = extract_messages_from_teams_html(driver)
     print(f"✅ Thu thập được {len(extracted_data)} tin nhắn từ [{chat_name}]")
     return extracted_data
@@ -192,28 +197,13 @@ def preprocess_message(content):
         if not line:
             continue
 
-        if re.match(r"^\+\s*(6|7|8|9|10)\s*/", line):
-            continue
+        # Đã loại bỏ đoạn regex xóa nhầm các dòng (+ 6/, + 7/...) gây mất dữ liệu!
 
         if re.match(r"^(\+|\d+\.|=>|-)", line):
             line = "\u200b" + line
         processed_lines.append(line)
 
-    changed = True
-    while changed:
-        changed = False
-        n = len(processed_lines)
-        for L in range(n // 2, 0, -1):
-            for i in range(n - 2 * L + 1):
-                if processed_lines[i : i + L] == processed_lines[i + L : i + 2 * L]:
-                    processed_lines = (
-                        processed_lines[: i + L] + processed_lines[i + 2 * L :]
-                    )
-                    changed = True
-                    break
-            if changed:
-                break
-
+    # Đã bỏ phần mã lặp deduplicate cứng nhắc có thể làm biến dạng nội dung dài
     content = "\n".join(processed_lines)
     return content.strip()
 
@@ -223,7 +213,10 @@ def is_valid_message(content):
         return False
 
     lower_content = content.lower()
-    if "checkin" in lower_content or "check in" in lower_content or "reset" in lower_content:
+    if "checkin" in lower_content or "check in" in lower_content or "reset 15min" in lower_content:
+        # Vẫn cho phép tin nhắn checkout đi qua
+        if "check out" in lower_content or "checkout" in lower_content:
+            return True
         return False
 
     return True
@@ -231,9 +224,15 @@ def is_valid_message(content):
 
 def filter_scraped_messages(all_scraped_data, current_hour):
     """
-    Lọc dữ liệu dựa theo khung giờ chạy script:
-    - Nếu chạy buổi sáng (< 12h, ví dụ 8h): Lọc báo cáo Ca Chiều/Tối của NGÀY HÔM QUA.
-    - Nếu chạy buổi chiều (>= 12h, ví dụ 14h): Lọc báo cáo Ca Sáng của NGÀY HÔM NAY.
+    Logic phân tách Ca chuẩn xác:
+    - Chạy Buổi Sáng (< 12h, ví dụ 8h/10h): 
+      + Lấy dữ liệu ngày HÔM QUA.
+      + CHỈ lấy báo cáo Ca Chiều (12h-18h) và Ca Tối (18h-24h).
+      + BỎ QUA các báo cáo Ca Sáng (6h-12h).
+    - Chạy Buổi Chiều (>= 12h, ví dụ 14h): 
+      + Lấy dữ liệu ngày HÔM NAY.
+      + CHỈ lấy báo cáo Ca Sáng (6h-12h30).
+      + BỎ QUA các báo cáo Ca Chiều & Tối.
     """
     filtered_results = {}
     EXCLUDED_SHEETS = [
@@ -245,19 +244,17 @@ def filter_scraped_messages(all_scraped_data, current_hour):
     ]
 
     now_vn = datetime.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh"))
-    
-    # Xác định mục tiêu lọc theo giờ chạy
-    is_run_morning = current_hour < 12  # Ví dụ: 8h sáng chạy -> Lấy ca chiều/tối hôm qua
+    is_run_morning = current_hour < 12 
 
     if is_run_morning:
-        # Chạy lúc 8h sáng -> Tìm dữ liệu ngày HÔM QUA
+        # Chạy sáng -> Lọc dữ liệu HÔM QUA
         target_date = now_vn - datetime.timedelta(days=1)
     else:
-        # Chạy lúc 14h chiều -> Tìm dữ liệu ngày HÔM NAY
+        # Chạy chiều -> Lọc dữ liệu HÔM NAY
         target_date = now_vn
 
-    target_ddmm = target_date.strftime("%d/%m")        # "23/07" hoặc "24/07"
-    target_full = target_date.strftime("%d/%m/%Y")    # "23/07/2026" hoặc "24/07/2026"
+    target_day = target_date.day
+    target_month = target_date.month
 
     for chat_name, msg_list in all_scraped_data.items():
         if chat_name in EXCLUDED_SHEETS:
@@ -266,60 +263,74 @@ def filter_scraped_messages(all_scraped_data, current_hour):
         filtered_results[chat_name] = []
         for item in msg_list:
             raw_content = item.get("content", "").strip()
-            ts_raw = item.get("timestamp", "").strip()
-            ts_lower = ts_raw.lower()
 
-            # 1. Kiểm tra cấu trúc tin nhắn
             if not is_valid_message(raw_content):
                 continue
 
-            # 2. KIỂM TRA NGÀY TRONG NỘI DUNG (CONTENT)
-            dates_in_content = re.findall(r"\b(\d{1,2}/\d{1,2}(?:/\d{2,4})?)\b", raw_content)
+            # 1. KIỂM TRA NGÀY TRONG NỘI DUNG
+            dates_in_content = re.findall(r"\b(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?\b", raw_content)
             if dates_in_content:
-                has_target_date = any(d == target_full or d == target_ddmm or d.startswith(target_ddmm) for d in dates_in_content)
+                has_target_date = False
+                for d_str, m_str, y_str in dates_in_content:
+                    if int(d_str) == target_day and int(m_str) == target_month:
+                        has_target_date = True
+                        break
                 if not has_target_date:
                     continue 
 
             lower_raw = raw_content.lower()
             is_matched_shift = False
 
-            if is_run_morning:
-                # --- PHÂN NHÁNH 1: LỌC CA CHIỀU & TỐI (Gửi lúc 8h sáng) ---
-                evening_keywords = ["ca chiều", "ca chieu", "ca tối", "ca toi", "ca đêm", "13h", "17h", "18h", "21h", "22h"]
-                if any(kw in lower_raw for kw in evening_keywords):
-                    is_matched_shift = True
-                else:
-                    # Hoặc check timestamp gửi trong khoảng 13:00 - 23:59 hôm qua
-                    time_match = re.search(r"\b(\d{1,2}):(\d{2})(?:\s*(am|pm))?\b", ts_lower)
-                    if time_match:
-                        hr = int(time_match.group(1))
-                        ampm = time_match.group(3)
-                        if ampm == "pm" and hr < 12: hr += 12
-                        elif ampm == "am" and hr == 12: hr = 0
-                        
-                        if 13 <= hr <= 23:
-                            is_matched_shift = True
-            else:
-                # --- PHÂN NHÁNH 2: LỌC CA SÁNG (Gửi lúc 14h chiều) ---
-                morning_keywords = ["ca sáng", "ca sang", "- 11h", "-11h", "- 12h", "-12h", "8h-12h", "8h30-11h30"]
-                if any(kw in lower_raw for kw in morning_keywords):
-                    is_matched_shift = True
-                else:
-                    # Check timestamp hệ thống gửi trong khoảng 06:00 - 13:00 hôm nay
-                    time_match = re.search(r"\b(\d{1,2}):(\d{2})(?:\s*(am|pm))?\b", ts_lower)
-                    if time_match:
-                        hr = int(time_match.group(1))
-                        ampm = time_match.group(3)
-                        if ampm == "pm" and hr < 12: hr += 12
-                        elif ampm == "am" and hr == 12: hr = 0
+            # Bóc tách mốc giờ làm việc trong text (ví dụ: 13h-17h, 8h-11h30, 20h-22h)
+            time_ranges = re.findall(r"(\d{1,2})\s*h(?:30|00)?\s*-\s*(\d{1,2})\s*h", lower_raw)
 
-                        if 6 <= hr <= 13:
+            if is_run_morning:
+                # =========================================================
+                # 🌞 CHẠY 8H/10H SÁNG -> CHỈ LẤY CA CHIỀU VÀ CA TỐI HÔM QUA
+                # =========================================================
+                
+                # Bắt buộc BỎ QUA nếu text ghi rõ ca sáng / giờ làm buổi sáng (6h - 12h)
+                if any(kw in lower_raw for kw in ["ca sáng", "ca sang", "8h-11h", "8h30-11h30", "7h30-11h30", "8h-12h", "9h-11h"]):
+                    continue
+
+                if time_ranges:
+                    for start_h, end_h in time_ranges:
+                        sh, eh = int(start_h), int(end_h)
+                        # Ca chiều/tối là ca có giờ bắt đầu từ 12h trở đi hoặc kết thúc sau 13h
+                        if sh >= 12 or eh > 13:
                             is_matched_shift = True
+                            break
+                else:
+                    # Nếu không bắt được khung giờ dạng '13h-17h', check từ khóa ca chiều/tối
+                    evening_keywords = ["ca chiều", "ca chieu", "ca tối", "ca toi", "ca đêm", "13h", "14h", "15h", "17h", "18h", "20h", "21h", "22h", "24h"]
+                    if any(kw in lower_raw for kw in evening_keywords):
+                        is_matched_shift = True
+
+            else:
+                # =========================================================
+                # 🌆 CHẠY 14H CHIỀU -> CHỈ LẤY CA SÁNG HÔM NAY
+                # =========================================================
+                
+                # Bắt buộc BỎ QUA nếu text ghi ca chiều / ca tối / ca đêm
+                if any(kw in lower_raw for kw in ["ca chiều", "ca chieu", "ca tối", "ca toi", "ca đêm", "13h-17h", "14h-17h", "20h-22h", "21h-24h"]):
+                    continue
+
+                if time_ranges:
+                    for start_h, end_h in time_ranges:
+                        sh, eh = int(start_h), int(end_h)
+                        # Ca sáng là ca bắt đầu từ 6h-11h và kết thúc trước/bằng 13h
+                        if 6 <= sh <= 11 and eh <= 13:
+                            is_matched_shift = True
+                            break
+                else:
+                    # Check từ khóa ca sáng
+                    morning_keywords = ["ca sáng", "ca sang", "- 11h", "-11h", "- 12h", "-12h", "8h-12h", "8h30-11h30", "7h30-11h30"]
+                    if any(kw in lower_raw for kw in morning_keywords):
+                        is_matched_shift = True
 
             if not is_matched_shift:
                 continue
 
-            # Tiền xử lý & gộp kết quả
             content = preprocess_message(raw_content)
             if content and content not in filtered_results[chat_name]:
                 filtered_results[chat_name].append(content)
@@ -337,7 +348,6 @@ def write_to_sheet(sheet_target_name, messages):
             "BoomWTF..AiLàmViệcRiêngThựcNÃOProofFileNGAY",
         ]
 
-        # Lấy danh sách key đang có dữ liệu
         sheet_names_with_data = [name for name in messages.keys() if name not in EXCLUDED_SHEETS and messages.get(name)]
 
         if not sheet_names_with_data:
@@ -369,7 +379,6 @@ def write_to_sheet(sheet_target_name, messages):
         if has_new_column:
             ws.update(range_name='A1', values=[updated_headers], value_input_option="USER_ENTERED")
             headers_on_sheet = updated_headers
-            print(f"🔹 Đã tự động cập nhật thêm cột mới cho [{sheet_target_name}]")
 
         max_len = max(len(messages[s]) for s in sheet_names_with_data)
 
@@ -388,7 +397,7 @@ def write_to_sheet(sheet_target_name, messages):
 
         if rows_to_append:
             ws.append_rows(rows_to_append, value_input_option="USER_ENTERED")
-            print(f"✅ Đã ghi thêm {len(rows_to_append)} dòng mới vào [{sheet_target_name}] (Đã tự khớp cột)")
+            print(f"✅ Đã ghi thêm {len(rows_to_append)} dòng mới vào [{sheet_target_name}]")
         else:
             print(f"ℹ️ Không có dữ liệu mới (trùng lặp) cho [{sheet_target_name}]")
 
@@ -424,13 +433,11 @@ def get_driver():
         options.add_argument(f"--proxy-server={proxy_url}")
 
     import subprocess
-    import re
 
     chrome_version = None
     try:
         result = subprocess.check_output(["google-chrome", "--version"]).decode("utf-8")
         chrome_version = int(re.search(r"\d+", result).group(0))
-        print(f"✅ Đã tự động nhận diện Chrome trên máy chủ là version: {chrome_version}")
     except Exception:
         pass
 
@@ -511,30 +518,23 @@ def login():
                 '//button[contains(., "Sign in") or contains(@aria-describedby, "signIn-title singIn-subtitle")]',
             )
             if len(extra_signin) > 0:
-                print("Phát hiện trang bắt Sign in tiếp theo...")
                 extra_signin[0].click()
-                print("Đã ấn nút Sign in")
                 time.sleep(10)
 
-                print("Bắt đầu ấn nút Retry")
                 actions = webdriver.ActionChains(driver)
                 actions.move_by_offset(500, 500).click().perform()
                 actions.send_keys(Keys.TAB).perform()
                 time.sleep(1)
                 actions.send_keys(Keys.ENTER).perform()
-                print("Đã ấn nút Retry")
                 time.sleep(20)
-            else:
-                print("👉 Giao diện Teams đã load thẳng, không có popup chặn, tiếp tục công việc!")
-
         except Exception as e:
             print(f"⚠️ Bỏ qua lỗi check màn hình phụ: {e}")
 
-        driver.save_screenshot("after_login_success.png")
+        display_screenshot(driver, "after_login_success.png")
         return driver
 
     except Exception as e:
-        driver.save_screenshot("error_login.png")
+        display_screenshot(driver, "error_login.png")
         print(f"❌ Lỗi đăng nhập chính: {e}")
         driver.quit()
         return None
@@ -556,15 +556,15 @@ if __name__ == "__main__":
         print("❌ Đăng nhập không thành công!")
         exit()
 
-    driver.save_screenshot("after_login.png")
+    display_screenshot(driver, "after_login.png")
 
     # 1. CÀO TIN NHẮN TỪ TEAMS HTML
     all_scraped_data = {}
     for chat_name in chat_names_to_process:
-        chat_messages = scroll_and_scrape_chat(driver, chat_name, max_scrolls=3)
+        chat_messages = scroll_and_scrape_chat(driver, chat_name, max_scrolls=8)
         all_scraped_data[chat_name] = chat_messages
 
-    # 2. XỬ LÝ LỌC TIN NHẮN TỪ DỮ LIỆU VỪA CÀO THAY VÌ ĐỌC TAB SHEET CŨ
+    # 2. XỬ LÝ LỌC TIN NHẮN
     current_hour = datetime.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).hour
     messages = filter_scraped_messages(all_scraped_data, current_hour)
     combined_msgs = combine_messages(messages)
