@@ -229,10 +229,11 @@ def is_valid_message(content):
     return True
 
 
-def filter_scraped_messages(all_scraped_data):
+def filter_scraped_messages(all_scraped_data, current_hour):
     """
-    Lọc dữ liệu Ca Sáng chuẩn xác:
-    Ưu tiên đọc từ ngữ trong Nội dung (Text) -> Check đúng Ngày Hôm Nay + Từ khóa Ca Sáng / CheckOut Ca Sáng.
+    Lọc dữ liệu dựa theo khung giờ chạy script:
+    - Nếu chạy buổi sáng (< 12h, ví dụ 8h): Lọc báo cáo Ca Chiều/Tối của NGÀY HÔM QUA.
+    - Nếu chạy buổi chiều (>= 12h, ví dụ 14h): Lọc báo cáo Ca Sáng của NGÀY HÔM NAY.
     """
     filtered_results = {}
     EXCLUDED_SHEETS = [
@@ -244,8 +245,19 @@ def filter_scraped_messages(all_scraped_data):
     ]
 
     now_vn = datetime.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh"))
-    today_ddmm = now_vn.strftime("%d/%m")        # "24/07"
-    today_full = now_vn.strftime("%d/%m/%Y")    # "24/07/2026"
+    
+    # Xác định mục tiêu lọc theo giờ chạy
+    is_run_morning = current_hour < 12  # Ví dụ: 8h sáng chạy -> Lấy ca chiều/tối hôm qua
+
+    if is_run_morning:
+        # Chạy lúc 8h sáng -> Tìm dữ liệu ngày HÔM QUA
+        target_date = now_vn - datetime.timedelta(days=1)
+    else:
+        # Chạy lúc 14h chiều -> Tìm dữ liệu ngày HÔM NAY
+        target_date = now_vn
+
+    target_ddmm = target_date.strftime("%d/%m")        # "23/07" hoặc "24/07"
+    target_full = target_date.strftime("%d/%m/%Y")    # "23/07/2026" hoặc "24/07/2026"
 
     for chat_name, msg_list in all_scraped_data.items():
         if chat_name in EXCLUDED_SHEETS:
@@ -257,49 +269,54 @@ def filter_scraped_messages(all_scraped_data):
             ts_raw = item.get("timestamp", "").strip()
             ts_lower = ts_raw.lower()
 
-            # 1. Kiểm tra tin nhắn có cấu trúc hợp lệ (không phải CheckIn/Reset/Hỏi đáp ngắn)
+            # 1. Kiểm tra cấu trúc tin nhắn
             if not is_valid_message(raw_content):
                 continue
 
-            # 2. Loại bỏ các tin nhắn có Timestamp của ngày cũ (Yesterday, Hôm qua,...)
-            if any(old_day in ts_lower for old_day in ["yesterday", "hôm qua", "mon", "tue", "wed", "thu", "fri", "sat", "sun"]):
-                continue
-
-            # 3. KIỂM TRA NGÀY TRONG NỘI DUNG (CONTENT): BẮT BUỘC PHẢI LÀ NGÀY HÔM NAY
+            # 2. KIỂM TRA NGÀY TRONG NỘI DUNG (CONTENT)
             dates_in_content = re.findall(r"\b(\d{1,2}/\d{1,2}(?:/\d{2,4})?)\b", raw_content)
             if dates_in_content:
-                has_today = any(d == today_full or d == today_ddmm or d.startswith(today_ddmm) for d in dates_in_content)
-                if not has_today:
-                    continue # Bỏ qua các tin nhắn có ngày 21/07, 22/07, 23/07 trong text
+                has_target_date = any(d == target_full or d == target_ddmm or d.startswith(target_ddmm) for d in dates_in_content)
+                if not has_target_date:
+                    continue 
 
-            # 4. LOẠI BỎ BÁO CÁO CA TỐI/CA ĐÊM (22:00 - 24:00, 18h-22h,...)
-            # Nếu trong text có chứa các khung giờ làm việc ca tối/đêm -> Bỏ qua ngay
             lower_raw = raw_content.lower()
-            if re.search(r"(22:00|23:00|24:00|18h|19h|20h|21h|22h|ca tối|ca đêm)", lower_raw):
-                continue
+            is_matched_shift = False
 
-            # 5. LỌC CA SÁNG DỰA TRÊN MỐC GIỜ TRONG TEXT (Ví dụ: -11h, 6h-12h, ca sáng)
-            # Hoặc kiểm tra timestamp hệ thống nếu không có giờ trong text
-            is_morning_report = False
-
-            # Check các từ khóa ca sáng trong text
-            if any(kw in lower_raw for kw in ["ca sáng", "ca sang", "- 11h", "-11h", "- 12h", "-12h", "8h-12h", "8h30-11h30"]):
-                is_morning_report = True
+            if is_run_morning:
+                # --- PHÂN NHÁNH 1: LỌC CA CHIỀU & TỐI (Gửi lúc 8h sáng) ---
+                evening_keywords = ["ca chiều", "ca chieu", "ca tối", "ca toi", "ca đêm", "13h", "17h", "18h", "21h", "22h"]
+                if any(kw in lower_raw for kw in evening_keywords):
+                    is_matched_shift = True
+                else:
+                    # Hoặc check timestamp gửi trong khoảng 13:00 - 23:59 hôm qua
+                    time_match = re.search(r"\b(\d{1,2}):(\d{2})(?:\s*(am|pm))?\b", ts_lower)
+                    if time_match:
+                        hr = int(time_match.group(1))
+                        ampm = time_match.group(3)
+                        if ampm == "pm" and hr < 12: hr += 12
+                        elif ampm == "am" and hr == 12: hr = 0
+                        
+                        if 13 <= hr <= 23:
+                            is_matched_shift = True
             else:
-                # Nếu không ghi rõ chữ "ca sáng", check timestamp hệ thống gửi trong khoảng 06:00 - 13:30
-                time_match = re.search(r"\b(\d{1,2}):(\d{2})(?:\s*(am|pm))?\b", ts_lower)
-                if time_match:
-                    hr = int(time_match.group(1))
-                    ampm = time_match.group(3)
-                    if ampm == "pm" and hr < 12:
-                        hr += 12
-                    elif ampm == "am" and hr == 12:
-                        hr = 0
+                # --- PHÂN NHÁNH 2: LỌC CA SÁNG (Gửi lúc 14h chiều) ---
+                morning_keywords = ["ca sáng", "ca sang", "- 11h", "-11h", "- 12h", "-12h", "8h-12h", "8h30-11h30"]
+                if any(kw in lower_raw for kw in morning_keywords):
+                    is_matched_shift = True
+                else:
+                    # Check timestamp hệ thống gửi trong khoảng 06:00 - 13:00 hôm nay
+                    time_match = re.search(r"\b(\d{1,2}):(\d{2})(?:\s*(am|pm))?\b", ts_lower)
+                    if time_match:
+                        hr = int(time_match.group(1))
+                        ampm = time_match.group(3)
+                        if ampm == "pm" and hr < 12: hr += 12
+                        elif ampm == "am" and hr == 12: hr = 0
 
-                    if 6 <= hr <= 13:
-                        is_morning_report = True
+                        if 6 <= hr <= 13:
+                            is_matched_shift = True
 
-            if not is_morning_report:
+            if not is_matched_shift:
                 continue
 
             # Tiền xử lý & gộp kết quả
@@ -549,7 +566,7 @@ if __name__ == "__main__":
 
     # 2. XỬ LÝ LỌC TIN NHẮN TỪ DỮ LIỆU VỪA CÀO THAY VÌ ĐỌC TAB SHEET CŨ
     current_hour = datetime.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).hour
-    messages = filter_scraped_messages(all_scraped_data)
+    messages = filter_scraped_messages(all_scraped_data, current_hour)
     combined_msgs = combine_messages(messages)
 
     print(f"\n✅ Báo cáo lọc được lúc {current_hour}h:")
