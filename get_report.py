@@ -129,13 +129,12 @@ def extract_messages_from_teams_html(driver):
     return scraped_messages
 
 
-def scroll_and_scrape_chat(driver, chat_name, max_scrolls=8):
+def scroll_and_scrape_chat(driver, chat_name, max_scrolls=12):
     print(f"🔍 Bắt đầu cào dữ liệu HTML từ chat: {chat_name}")
     if not open_chat(driver, chat_name):
         return []
 
     try:
-        # Click vào khung chat và cuộn lên để tải thêm tin nhắn
         message_pane = WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.XPATH, '//div[@role="document"] | //div[@contenteditable="true"]'))
         )
@@ -145,8 +144,7 @@ def scroll_and_scrape_chat(driver, chat_name, max_scrolls=8):
         for _ in range(max_scrolls):
             message_pane.send_keys(Keys.PAGE_UP)
             time.sleep(1.2)
-        
-        # Cuộn phát cuối bằng HOME để đẩy tối đa tin nhắn cũ ra HTML
+
         message_pane.send_keys(Keys.HOME)
         time.sleep(2)
     except Exception as e:
@@ -197,13 +195,14 @@ def preprocess_message(content):
         if not line:
             continue
 
-        # Đã loại bỏ đoạn regex xóa nhầm các dòng (+ 6/, + 7/...) gây mất dữ liệu!
+        # CẮT BỎ CÁC DÒNG CHECKLIST MỤC 6, 7, 8, 9, 10
+        if re.match(r"^\+?\s*(6|7|8|9|10)\s*/", line):
+            continue
 
         if re.match(r"^(\+|\d+\.|=>|-)", line):
             line = "\u200b" + line
         processed_lines.append(line)
 
-    # Đã bỏ phần mã lặp deduplicate cứng nhắc có thể làm biến dạng nội dung dài
     content = "\n".join(processed_lines)
     return content.strip()
 
@@ -214,7 +213,6 @@ def is_valid_message(content):
 
     lower_content = content.lower()
     if "checkin" in lower_content or "check in" in lower_content or "reset 15min" in lower_content:
-        # Vẫn cho phép tin nhắn checkout đi qua
         if "check out" in lower_content or "checkout" in lower_content:
             return True
         return False
@@ -225,14 +223,8 @@ def is_valid_message(content):
 def filter_scraped_messages(all_scraped_data, current_hour):
     """
     Logic phân tách Ca chuẩn xác:
-    - Chạy Buổi Sáng (< 12h, ví dụ 8h/10h): 
-      + Lấy dữ liệu ngày HÔM QUA.
-      + CHỈ lấy báo cáo Ca Chiều (12h-18h) và Ca Tối (18h-24h).
-      + BỎ QUA các báo cáo Ca Sáng (6h-12h).
-    - Chạy Buổi Chiều (>= 12h, ví dụ 14h): 
-      + Lấy dữ liệu ngày HÔM NAY.
-      + CHỈ lấy báo cáo Ca Sáng (6h-12h30).
-      + BỎ QUA các báo cáo Ca Chiều & Tối.
+    - Chạy Buổi Sáng (< 12h): Lấy dữ liệu Ca Chiều & Ca Tối (ngày HÔM QUA hoặc gửi rạng sáng HÔM NAY).
+    - Chạy Buổi Chiều (>= 12h): Lấy dữ liệu Ca Sáng (ngày HÔM NAY).
     """
     filtered_results = {}
     EXCLUDED_SHEETS = [
@@ -244,13 +236,11 @@ def filter_scraped_messages(all_scraped_data, current_hour):
     ]
 
     now_vn = datetime.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh"))
-    is_run_morning = current_hour < 12 
+    is_run_morning = current_hour < 12
 
     if is_run_morning:
-        # Chạy sáng -> Lọc dữ liệu HÔM QUA
         target_date = now_vn - datetime.timedelta(days=1)
     else:
-        # Chạy chiều -> Lọc dữ liệu HÔM NAY
         target_date = now_vn
 
     target_day = target_date.day
@@ -267,64 +257,53 @@ def filter_scraped_messages(all_scraped_data, current_hour):
             if not is_valid_message(raw_content):
                 continue
 
-            # 1. KIỂM TRA NGÀY TRONG NỘI DUNG
+            # 1. KIỂM TRA NGÀY TRONG NỘI DUNG (Khớp cả 29/7 và 29/07)
             dates_in_content = re.findall(r"\b(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?\b", raw_content)
             if dates_in_content:
                 has_target_date = False
                 for d_str, m_str, y_str in dates_in_content:
-                    if int(d_str) == target_day and int(m_str) == target_month:
+                    d_int, m_str_int = int(d_str), int(m_str)
+                    if (d_int == target_day and m_str_int == target_month) or \
+                       (is_run_morning and d_int == now_vn.day and m_str_int == now_vn.month):
                         has_target_date = True
                         break
                 if not has_target_date:
-                    continue 
+                    continue
 
             lower_raw = raw_content.lower()
             is_matched_shift = False
 
-            # Bóc tách mốc giờ làm việc trong text (ví dụ: 13h-17h, 8h-11h30, 20h-22h)
-            time_ranges = re.findall(r"(\d{1,2})\s*h(?:30|00)?\s*-\s*(\d{1,2})\s*h", lower_raw)
+            # Regex nâng cấp: Bắt mọi dạng khoảng giờ như 14:00 - 17:00, 14h-17h, 22:00-24:00, 22h-0h
+            time_ranges = re.findall(r"(\d{1,2})\s*(?::\d{2}|h\d{0,2})?\s*-\s*(\d{1,2})\s*(?::\d{2}|h\d{0,2})?", lower_raw)
 
             if is_run_morning:
-                # =========================================================
-                # 🌞 CHẠY 8H/10H SÁNG -> CHỈ LẤY CA CHIỀU VÀ CA TỐI HÔM QUA
-                # =========================================================
-                
-                # Bắt buộc BỎ QUA nếu text ghi rõ ca sáng / giờ làm buổi sáng (6h - 12h)
-                if any(kw in lower_raw for kw in ["ca sáng", "ca sang", "8h-11h", "8h30-11h30", "7h30-11h30", "8h-12h", "9h-11h"]):
-                    continue
-
+                # 🌞 CHẠY 8H/10H SÁNG -> LẤY CA CHIỀU & CA TỐI
                 if time_ranges:
                     for start_h, end_h in time_ranges:
                         sh, eh = int(start_h), int(end_h)
-                        # Ca chiều/tối là ca có giờ bắt đầu từ 12h trở đi hoặc kết thúc sau 13h
-                        if sh >= 12 or eh > 13:
+                        # Bắt đầu từ 12h trở đi HOẶC kết thúc sau 13h HOẶC kết thúc lúc 0h/24h
+                        if sh >= 12 or eh > 13 or eh == 0 or eh == 24:
                             is_matched_shift = True
                             break
-                else:
-                    # Nếu không bắt được khung giờ dạng '13h-17h', check từ khóa ca chiều/tối
-                    evening_keywords = ["ca chiều", "ca chieu", "ca tối", "ca toi", "ca đêm", "13h", "14h", "15h", "17h", "18h", "20h", "21h", "22h", "24h"]
+                
+                # Fallback từ khóa mốc giờ đơn lẻ
+                if not is_matched_shift:
+                    evening_keywords = ["13h", "14h", "15h", "16h", "17h", "18h", "20h", "21h", "22h", "24h", "0h", "14:00", "15:00", "16:00", "17:00", "22:00", "ca chiều", "ca chieu", "ca tối", "ca toi", "ca đêm"]
                     if any(kw in lower_raw for kw in evening_keywords):
                         is_matched_shift = True
 
             else:
-                # =========================================================
-                # 🌆 CHẠY 14H CHIỀU -> CHỈ LẤY CA SÁNG HÔM NAY
-                # =========================================================
-                
-                # Bắt buộc BỎ QUA nếu text ghi ca chiều / ca tối / ca đêm
-                if any(kw in lower_raw for kw in ["ca chiều", "ca chieu", "ca tối", "ca toi", "ca đêm", "13h-17h", "14h-17h", "20h-22h", "21h-24h"]):
-                    continue
-
+                # 🌆 CHẠY 14H CHIỀU -> LẤY CA SÁNG HÔM NAY
                 if time_ranges:
                     for start_h, end_h in time_ranges:
                         sh, eh = int(start_h), int(end_h)
-                        # Ca sáng là ca bắt đầu từ 6h-11h và kết thúc trước/bằng 13h
-                        if 6 <= sh <= 11 and eh <= 13:
+                        # Ca sáng: bắt đầu 6h-11h và kết thúc <= 13h
+                        if 6 <= sh <= 11 and (0 < eh <= 13):
                             is_matched_shift = True
                             break
-                else:
-                    # Check từ khóa ca sáng
-                    morning_keywords = ["ca sáng", "ca sang", "- 11h", "-11h", "- 12h", "-12h", "8h-12h", "8h30-11h30", "7h30-11h30"]
+
+                if not is_matched_shift:
+                    morning_keywords = ["8h-11h", "8h30-11h30", "7h30-11h30", "8h-12h", "9h-11h", "8:00-11:30", "7:30-11:30"]
                     if any(kw in lower_raw for kw in morning_keywords):
                         is_matched_shift = True
 
@@ -561,7 +540,7 @@ if __name__ == "__main__":
     # 1. CÀO TIN NHẮN TỪ TEAMS HTML
     all_scraped_data = {}
     for chat_name in chat_names_to_process:
-        chat_messages = scroll_and_scrape_chat(driver, chat_name, max_scrolls=8)
+        chat_messages = scroll_and_scrape_chat(driver, chat_name, max_scrolls=12)
         all_scraped_data[chat_name] = chat_messages
 
     # 2. XỬ LÝ LỌC TIN NHẮN
