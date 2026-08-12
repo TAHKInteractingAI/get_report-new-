@@ -1,0 +1,39 @@
+# ==========================================
+# 1. BẢO MẬT: Bỏ qua khóa mật & thông tin cá nhân
+# ==========================================
+.env
+*.json
+!package.json
+
+# Bỏ qua các file ảnh chụp màn hình debug
+*.png
+after_*.png
+error_*.png
+screenshot.png
+
+# ==========================================
+# 2. MÔI TRƯỜNG PHÁT TRIỂN & BỘ NHỚ ĐỆM PYTHON
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+env/
+
+# ==========================================
+# 3. TRÌNH DUYỆT & DRIVER TẠM
+# ==========================================
+.chromedriver/
+chromedriver
+chromedriver.exe
+*.log
+
+# ==========================================
+# 4. TỆP HỆ THỐNG & CÔNG CỤ EDIT LẬP TRÌNH
+# ==========================================
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
