@@ -1,23 +1,27 @@
 import datetime
-import os
-import re
-import time
-import json
-import pytz
-import html
-from dateutil import parser
 from dotenv import load_dotenv
-from bs4 import BeautifulSoup
-
+import pytz
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
-
+from dateutil import parser
+import re
 from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 import undetected_chromedriver as uc
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
+from webdriver_manager.chrome import ChromeDriverManager
+import time
+import json
+import os
+
+# Import Colab authentication libraries
+from google.colab import auth
+from google.auth import default
+
+# Import for HTML parsing
+from bs4 import BeautifulSoup
 
 load_dotenv()
 
@@ -281,7 +285,7 @@ def filter_scraped_messages(all_scraped_data, current_hour):
                         if sh >= 12 or eh > 13 or eh == 0 or eh == 24:
                             is_matched_shift = True
                             break
-                
+
                 # Fallback từ khóa mốc giờ đơn lẻ
                 if not is_matched_shift:
                     evening_keywords = ["13h", "14h", "15h", "16h", "17h", "18h", "20h", "21h", "22h", "24h", "0h", "14:00", "15:00", "16:00", "17:00", "22:00", "ca chiều", "ca chieu", "ca tối", "ca toi", "ca đêm"]
