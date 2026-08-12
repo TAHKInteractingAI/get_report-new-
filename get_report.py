@@ -1,27 +1,23 @@
 import datetime
-from dotenv import load_dotenv
-import pytz
-import gspread
-from dateutil import parser
+import os
 import re
+import time
+import json
+import pytz
+import html
+from dateutil import parser
+from dotenv import load_dotenv
+from bs4 import BeautifulSoup
+
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+
 from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 import undetected_chromedriver as uc
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
-from webdriver_manager.chrome import ChromeDriverManager
-import time
-import json
-import os
-
-# Import Colab authentication libraries
-from google.colab import auth
-from google.auth import default
-
-# Import for HTML parsing
-from bs4 import BeautifulSoup
 
 load_dotenv()
 
