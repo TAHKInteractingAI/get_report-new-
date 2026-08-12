@@ -7,3 +7,4 @@ webdriver-manager
 ipython
 undetected-chromedriver
 python-dotenv
+beautifulsoup4
