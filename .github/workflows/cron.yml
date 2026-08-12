@@ -47,7 +47,7 @@ jobs:
           TEAMS_PASSWORD: ${{ secrets.TEAMS_PASSWORD }}
           PROXY_URL: ${{ secrets.PROXY_URL }}
         run: |
-          python get_report-new-.py
+          python get_report.py
 
       - name: Upload error screenshots on failure
         if: failure()
