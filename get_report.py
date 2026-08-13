@@ -44,26 +44,27 @@ SCOPES = [
 # Define MESSAGE_PATTERN for message validation
 MESSAGE_PATTERN = re.compile(r".*\w.*")
 
-# Kết nối Google Sheets thông qua Service Account từ GitHub Secrets
-client = None
-sheet_names = []
-spreadsheet = None
-
-try:
-    # Đọc credentials JSON từ GitHub Secrets (hỗ trợ cả 2 tên biến)
+# Hàm khởi tạo và lấy kết nối Google Sheets (tránh bị lỗi NoneType toàn cục)
+def get_spreadsheet():
     sa_json_str = os.environ.get('GCP_SA_KEY') or os.environ.get('GCP_CREDENTIALS_JSON')
-    
-    if sa_json_str:
-        service_account_info = json.loads(sa_json_str)
+    if not sa_json_str:
+        print("⚠️ Không tìm thấy Service Account JSON trong Environment Variables!")
+        return None
+
+    try:
+        # Xử lý chuỗi JSON phòng trường hợp xuống dòng bị lỗi hóa ký tự escape
+        service_account_info = json.loads(sa_json_str, strict=False)
         creds = ServiceAccountCredentials.from_json_keyfile_dict(service_account_info, SCOPES)
         client = gspread.authorize(creds)
-        spreadsheet = client.open_by_key(SPREADSHEET_ID)
-        sheet_names = [s.title for s in spreadsheet.worksheets()]
-        print("✅ Google Sheets connected successfully via Service Account.")
-    else:
-        print("⚠️ Không tìm thấy Service Account JSON trong Environment Variables.")
-except Exception as e:
-    print(f"⚠️ Error connecting to Google Sheets: {e}. Google Sheets functionality will be disabled.")
+        ss = client.open_by_key(SPREADSHEET_ID)
+        print("✅ Kết nối Google Sheets thành công via Service Account.")
+        return ss
+    except Exception as e:
+        print(f"❌ Lỗi kết nối Google Sheets chi tiết: {e}")
+        return None
+
+# Khởi tạo biến spreadsheet
+spreadsheet = get_spreadsheet()
 
 def display_screenshot(driver: webdriver.Chrome, file_name: str = "screenshot.png"):
     driver.save_screenshot(file_name)
@@ -320,6 +321,14 @@ def filter_scraped_messages(all_scraped_data, current_hour):
 
 
 def write_to_sheet(sheet_target_name, messages):
+    global spreadsheet
+    if spreadsheet is None:
+        print(f"⚠️ Thử kết nối lại Google Sheets cho [{sheet_target_name}]...")
+        spreadsheet = get_spreadsheet()
+        if spreadsheet is None:
+            print(f"❌ Không thể ghi vào [{sheet_target_name}] do chưa kết nối được Google Sheets.")
+            return
+            
     try:
         EXCLUDED_SHEETS = [
             "Report",
