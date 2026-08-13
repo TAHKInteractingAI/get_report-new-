@@ -48,16 +48,33 @@ client = None
 sheet_names = []
 spreadsheet = None
 
+# Kết nối Google Sheets thông qua Service Account từ GitHub Secrets
+client = None
+spreadsheet = None
+sheet_names = []
+
+def get_gsclient():
+    gcp_json = os.environ.get('GCP_CREDENTIALS_JSON') or os.environ.get('GCP_SA_KEY')
+    if not gcp_json:
+        print("⚠️ Không tìm thấy biến môi trường GCP_CREDENTIALS_JSON / GCP_SA_KEY!")
+        return None
+    
+    try:
+        creds_dict = json.loads(gcp_json)
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, SCOPES)
+        return gspread.authorize(creds)
+    except Exception as e:
+        print(f"❌ Lỗi khởi tạo Service Account Google Sheets: {e}")
+        return None
+
 try:
-    auth.authenticate_user()
-    creds, project = default()
-    client = gspread.authorize(creds)
-    print(f"Spreadsheet ID: {SPREADSHEET_ID}")
-    spreadsheet = client.open_by_key(SPREADSHEET_ID)
-    sheet_names = [s.title for s in spreadsheet.worksheets()]
-    print("✅ Google Sheets connected successfully using Colab authentication.")
+    client = get_gsclient()
+    if client:
+        spreadsheet = client.open_by_key(SPREADSHEET_ID)
+        sheet_names = [s.title for s in spreadsheet.worksheets()]
+        print("✅ Google Sheets connected successfully using Service Account.")
 except Exception as e:
-    print(f"⚠️ Error connecting to Google Sheets: {e}. Google Sheets functionality will be disabled.")
+    print(f"⚠️ Error connecting to Google Sheets: {e}")
 
 def display_screenshot(driver: webdriver.Chrome, file_name: str = "screenshot.png"):
     driver.save_screenshot(file_name)
