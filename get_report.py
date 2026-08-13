@@ -50,13 +50,18 @@ sheet_names = []
 spreadsheet = None
 
 try:
-    auth.authenticate_user()
-    creds, project = default()
-    client = gspread.authorize(creds)
-    print(f"Spreadsheet ID: {SPREADSHEET_ID}")
-    spreadsheet = client.open_by_key(SPREADSHEET_ID)
-    sheet_names = [s.title for s in spreadsheet.worksheets()]
-    print("✅ Google Sheets connected successfully using Colab authentication.")
+    # Đọc credentials JSON từ GitHub Secrets (hỗ trợ cả 2 tên biến)
+    sa_json_str = os.environ.get('GCP_SA_KEY') or os.environ.get('GCP_CREDENTIALS_JSON')
+    
+    if sa_json_str:
+        service_account_info = json.loads(sa_json_str)
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(service_account_info, SCOPES)
+        client = gspread.authorize(creds)
+        spreadsheet = client.open_by_key(SPREADSHEET_ID)
+        sheet_names = [s.title for s in spreadsheet.worksheets()]
+        print("✅ Google Sheets connected successfully via Service Account.")
+    else:
+        print("⚠️ Không tìm thấy Service Account JSON trong Environment Variables.")
 except Exception as e:
     print(f"⚠️ Error connecting to Google Sheets: {e}. Google Sheets functionality will be disabled.")
 
