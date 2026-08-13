@@ -63,14 +63,23 @@ def get_gsclient():
         print(f"❌ Lỗi khởi tạo Service Account Google Sheets: {e}")
         return None
 
-try:
-    client = get_gsclient()
-    if client:
-        spreadsheet = client.open_by_key(SPREADSHEET_ID)
-        sheet_names = [s.title for s in spreadsheet.worksheets()]
-        print("✅ Google Sheets connected successfully using Service Account.")
-except Exception as e:
-    print(f"⚠️ Error connecting to Google Sheets: {e}")
+def init_google_sheets():
+    global client, spreadsheet, sheet_names
+    try:
+        client = get_gsclient()
+        if client:
+            spreadsheet = client.open_by_key(SPREADSHEET_ID)
+            sheet_names = [s.title for s in spreadsheet.worksheets()]
+            print("✅ Google Sheets connected successfully using Service Account.")
+            return True
+        else:
+            print("⚠️ Không thể tạo client Google Sheets.")
+            return False
+    except Exception as e:
+        print(f"⚠️ Error connecting to Google Sheets: {e}")
+        return False
+
+init_google_sheets()
 
 def display_screenshot(driver: webdriver.Chrome, file_name: str = "screenshot.png"):
     driver.save_screenshot(file_name)
