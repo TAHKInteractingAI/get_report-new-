@@ -44,10 +44,6 @@ SCOPES = [
 # Define MESSAGE_PATTERN for message validation
 MESSAGE_PATTERN = re.compile(r".*\w.*")
 
-client = None
-sheet_names = []
-spreadsheet = None
-
 # Kết nối Google Sheets thông qua Service Account từ GitHub Secrets
 client = None
 spreadsheet = None
