@@ -1,23 +1,24 @@
+import base64
 import datetime
+import html
+import json
 import os
 import re
 import time
-import json
-import pytz
-import html
+import zlib
+
+from bs4 import BeautifulSoup
 from dateutil import parser
 from dotenv import load_dotenv
-from bs4 import BeautifulSoup
-
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-
+import pytz
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
-import undetected_chromedriver as uc
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
+import undetected_chromedriver as uc
 
 load_dotenv()
 
@@ -44,6 +45,7 @@ SCOPES = [
 # Define MESSAGE_PATTERN for message validation
 MESSAGE_PATTERN = re.compile(r".*\w.*")
 
+
 # Hàm khởi tạo và lấy kết nối Google Sheets (tránh bị lỗi NoneType toàn cục)
 def get_spreadsheet():
     sa_json_str = os.environ.get('GCP_SA_KEY') or os.environ.get('GCP_CREDENTIALS_JSON')
@@ -63,8 +65,10 @@ def get_spreadsheet():
         print(f"❌ Lỗi kết nối Google Sheets chi tiết: {e}")
         return None
 
+
 # Khởi tạo biến spreadsheet
 spreadsheet = get_spreadsheet()
+
 
 def display_screenshot(driver: webdriver.Chrome, file_name: str = "screenshot.png"):
     driver.save_screenshot(file_name)
@@ -328,7 +332,7 @@ def write_to_sheet(sheet_target_name, messages):
         if spreadsheet is None:
             print(f"❌ Không thể ghi vào [{sheet_target_name}] do chưa kết nối được Google Sheets.")
             return
-            
+
     try:
         EXCLUDED_SHEETS = [
             "Report",
@@ -431,7 +435,23 @@ def get_driver():
     except Exception:
         pass
 
-    if chrome_version:
+    # Hỗ trợ chạy local trên Windows không cần tải lại driver nếu đã có sẵn
+    if os.name == "nt":
+        local_driver = os.path.join(
+            os.environ.get("APPDATA", ""), "undetected_chromedriver", "undetected_chromedriver.exe"
+        )
+        if os.path.exists(local_driver):
+            driver = uc.Chrome(options=options, driver_executable_path=local_driver)
+        else:
+            try:
+                import winreg
+                key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Google\Chrome\BLBeacon")
+                ver_str, _ = winreg.QueryValueEx(key, "version")
+                chrome_version = int(ver_str.split(".")[0])
+            except Exception:
+                chrome_version = 157
+            driver = uc.Chrome(options=options, version_main=chrome_version)
+    elif chrome_version:
         driver = uc.Chrome(options=options, version_main=chrome_version)
     else:
         driver = uc.Chrome(options=options)
@@ -454,114 +474,121 @@ def get_driver():
     return driver
 
 
+def load_session_data():
+    encoded = os.environ.get("TEAMS_SESSION")
+    if not encoded and os.path.exists("teams_session.txt"):
+        with open("teams_session.txt", "r", encoding="utf-8") as f:
+            encoded = f.read().strip()
+    if not encoded:
+        return None
+    raw_bytes = zlib.decompress(base64.b64decode(encoded))
+    return json.loads(raw_bytes.decode("utf-8"))
+
+
 def login():
+    session_data = load_session_data()
+    if not session_data:
+        print("❌ Không tìm thấy TEAMS_SESSION hoặc file teams_session.txt!")
+        return None
+
     driver = get_driver()
-    driver.get("https://teams.live.com/v2/")
-    wait = WebDriverWait(driver, 30)
-
     try:
-        print("⏳ Đang tiến hành đăng nhập...")
-        sign_in_btn = wait.until(
-            EC.element_to_be_clickable((By.XPATH, '//button[contains(., "Sign in")]'))
-        )
-        sign_in_btn.click()
+        print("⏳ Đang nạp session đăng nhập Microsoft Teams...")
+        driver.execute_cdp_cmd("Network.enable", {})
 
-        email_input = wait.until(
-            EC.presence_of_element_located((By.ID, "usernameEntry"))
-        )
-        email_input.send_keys(email)
-        email_input.send_keys(Keys.RETURN)
+        allowed_keys = {
+            "name", "value", "domain", "path", "secure", "httpOnly", "sameSite", "expires", "priority"
+        }
+        clean_cookies = []
+        for c in session_data.get("cookies", []):
+            item = {k: v for k, v in c.items() if k in allowed_keys and v is not None}
+            if item.get("expires", 1) <= 0:
+                item.pop("expires", None)
+            clean_cookies.append(item)
+
+        driver.execute_cdp_cmd("Network.setCookies", {"cookies": clean_cookies})
+
+        # Mở Teams lần 1
+        driver.get("https://teams.live.com/v2/")
         time.sleep(3)
 
-        try:
-            use_pass_btn = WebDriverWait(driver, 10).until(
-                EC.element_to_be_clickable(
-                    (By.XPATH, '//span[contains(text(), "Use your password")]')
+        # Nạp localStorage nếu có
+        local_storage = session_data.get("localStorage", {})
+        if local_storage:
+            for k, v in local_storage.items():
+                driver.execute_script(
+                    "window.localStorage.setItem(arguments[0], arguments[1]);", k, v
                 )
+            driver.get("https://teams.live.com/v2/")
+
+        # Nếu trang Welcome hiện nút Sign in -> bấm 1 cái để kích hoạt SSO từ cookie sẵn có
+        try:
+            sso_btn = WebDriverWait(driver, 6).until(
+                EC.element_to_be_clickable((By.XPATH, '//button[contains(., "Sign in")]'))
             )
-            use_pass_btn.click()
-        except:
+            print("🔄 Bấm Sign in để kích hoạt SSO từ cookie...")
+            sso_btn.click()
+        except Exception:
             pass
 
-        pass_input = wait.until(
-            EC.presence_of_element_located((By.ID, "passwordEntry"))
+        # Xử lý nếu Teams hiện lỗi tạm thời "Retry"
+        try:
+            WebDriverWait(driver, 8).until(
+                EC.presence_of_element_located((By.XPATH, '//*[contains(text(), "Retry")]'))
+            )
+            print("🔄 Phát hiện màn hình Retry, tải lại trang...")
+            driver.execute_script("window.location.replace('https://teams.live.com/v2/');")
+        except Exception:
+            pass
+
+        # Chờ thực sự vào được giao diện chat (kiểm tra có ít nhất 1 nhóm chat xuất hiện)
+        target_chat_xpath = " | ".join(
+            [f"//span[normalize-space(text())='{name}']" for name in chat_names_to_process[:3]]
         )
-        pass_input.send_keys(password)
-        pass_input.send_keys(Keys.RETURN)
+        WebDriverWait(driver, 45).until(
+            EC.presence_of_element_located((By.XPATH, target_chat_xpath))
+        )
 
-        try:
-            no_btn = WebDriverWait(driver, 15).until(
-                EC.element_to_be_clickable(
-                    (By.CSS_SELECTOR, 'button[data-testid="secondaryButton"]')
-                )
-            )
-            no_btn.click()
-        except:
-            pass
-
-        print("✅ Đăng nhập thành công!")
-        time.sleep(15)
-
-        try:
-            extra_signin = driver.find_elements(
-                By.XPATH,
-                '//button[contains(., "Sign in") or contains(@aria-describedby, "signIn-title singIn-subtitle")]',
-            )
-            if len(extra_signin) > 0:
-                extra_signin[0].click()
-                time.sleep(10)
-
-                actions = webdriver.ActionChains(driver)
-                actions.move_by_offset(500, 500).click().perform()
-                actions.send_keys(Keys.TAB).perform()
-                time.sleep(1)
-                actions.send_keys(Keys.ENTER).perform()
-                time.sleep(20)
-        except Exception as e:
-            print(f"⚠️ Bỏ qua lỗi check màn hình phụ: {e}")
-
+        print("✅ Đăng nhập bằng Session thành công!")
         display_screenshot(driver, "after_login_success.png")
         return driver
 
     except Exception as e:
         display_screenshot(driver, "error_login.png")
-        print(f"❌ Lỗi đăng nhập chính: {e}")
+        print(f"❌ Đăng nhập bằng Session thất bại (có thể session đã hết hạn hoặc bị chặn): {e}")
         driver.quit()
         return None
 
 
 if __name__ == "__main__":
     driver = None
-    for attempt_login in range(5):
+    for attempt_login in range(2):
         driver = login()
         if driver:
             print("login thành công")
             break
         else:
-            print(f"⚠️ Thử đăng nhập lại lần {attempt_login + 1}/5...")
+            print(f"⚠️ Thử nạp session lại lần {attempt_login + 1}/2...")
             time.sleep(2)
 
-    time.sleep(5)
+    time.sleep(3)
     if not driver:
         print("❌ Đăng nhập không thành công!")
         exit()
 
     display_screenshot(driver, "after_login.png")
 
-    # 1. CÀO TIN NHẮN TỪ TEAMS HTML
     all_scraped_data = {}
     for chat_name in chat_names_to_process:
         chat_messages = scroll_and_scrape_chat(driver, chat_name, max_scrolls=12)
         all_scraped_data[chat_name] = chat_messages
 
-    # 2. XỬ LÝ LỌC TIN NHẮN
     current_hour = datetime.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).hour
     messages = filter_scraped_messages(all_scraped_data, current_hour)
     combined_msgs = combine_messages(messages)
 
     print(f"\n✅ Báo cáo lọc được lúc {current_hour}h:")
 
-    # 3. GỬI TIN NHẮN ĐÃ GỘP VÀO TEAMS CHAT
     target_chat = "GetReport"
     print(f"\n➡️ Đang gửi báo cáo tổng hợp vào chat: {target_chat}")
     if open_chat(driver, target_chat):
@@ -571,7 +598,6 @@ if __name__ == "__main__":
                 message = f"[ {sheet_name} ]\n" + msg_content
                 send_message(driver, message)
 
-    # 4. GHI DỮ LIỆU BÁO CÁO LÊN GOOGLE SHEETS
     write_to_sheet("Report", messages)
     write_to_sheet("GetReport", messages)
 

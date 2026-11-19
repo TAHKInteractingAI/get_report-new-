@@ -30,6 +30,7 @@ jobs:
           TEAMS_EMAIL: ${{ secrets.TEAMS_EMAIL }}
           TEAMS_PASSWORD: ${{ secrets.TEAMS_PASSWORD }}
           PROXY_URL: ${{ secrets.PROXY_URL }}
+          TEAMS_SESSION: ${{ secrets.TEAMS_SESSION }}
         run: |
           python get_report.py
 
