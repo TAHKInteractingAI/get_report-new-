@@ -281,7 +281,11 @@ def filter_scraped_messages(all_scraped_data, current_hour):
             is_matched_shift = False
 
             # Regex nâng cấp: Bắt mọi dạng khoảng giờ như 14:00 - 17:00, 14h-17h, 22:00-24:00, 22h-0h
-            time_ranges = re.findall(r"(\d{1,2})\s*(?::\d{2}|h\d{0,2})?\s*-\s*(\d{1,2})\s*(?::\d{2}|h\d{0,2})?", lower_raw)
+            time_ranges = re.findall(
+                r"(?<![\d/])(\d{1,2})\s*(?::\d{2}|h\d{0,2})?\s*-\s*"
+                r"(\d{1,2})\s*(?::\d{2}|h\d{0,2})?(?![\d/])",
+                lower_raw,
+            )
 
             if is_run_morning:
                 # 🌞 CHẠY 8H/10H SÁNG -> LẤY CA CHIỀU & CA TỐI
